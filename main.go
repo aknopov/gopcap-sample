@@ -3,10 +3,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"main/set"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -25,7 +29,12 @@ const (
 	PCAP_GTG_FLAGS                           = uint32(PCAP_IF_UP | PCAP_IF_RUNNING | PCAP_IF_CONNECTION_STATUS_CONNECTED)
 )
 
+var pid = 13756
+
 func main() {
+
+	ports := getOpenPorts(pid)
+	// fmt.Printf("Process %d has open ports: %v\n\n", pid, ports) //UC
 
 	devs, err := pcap.FindAllDevs()
 	if err != nil {
@@ -33,10 +42,13 @@ func main() {
 	}
 
 	waitGroup := new(sync.WaitGroup)
-	devIps := make(map[string]string)
+	sigStop := make(chan os.Signal, 1)
+	signal.Notify(sigStop, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGHUP)
+
+	devIps := make(map[string]string) // UC
 
 	for idx, dev := range devs {
-		if (dev.Flags & PCAP_GTG_FLAGS) != PCAP_GTG_FLAGS {
+		if (dev.Flags & PCAP_GTG_FLAGS) != PCAP_GTG_FLAGS { //  || (dev.Flags & PCAP_IF_LOOPBACK) == 0
 			continue
 		}
 
@@ -48,10 +60,10 @@ func main() {
 			ips = append(ips, addr.IP.String())
 		}
 		if len(ips) > 0 {
-			devIps[strconv.Itoa(idx)+" ["+dev.Name+"]:"+strconv.FormatInt(int64(dev.Flags), 16)] = strings.Join(ips, ",")
+			devIps[strconv.Itoa(idx)+" ["+dev.Name+"]:"+strconv.FormatInt(int64(dev.Flags), 16)] = strings.Join(ips, ",") // UC
 
 			waitGroup.Add(1)
-			go processDeviceMsgs(&dev, idx, waitGroup)
+			go processDeviceMsgs(&dev, idx, ports, waitGroup, sigStop)
 		}
 	}
 
@@ -62,7 +74,7 @@ func main() {
 	waitGroup.Wait()
 }
 
-func processDeviceMsgs(dev *pcap.Interface, idx int, waitGroup *sync.WaitGroup) {
+func processDeviceMsgs(dev *pcap.Interface, idx int, ports *set.Set[int], waitGroup *sync.WaitGroup, sigStop chan os.Signal) {
 
 	defer waitGroup.Done()
 
@@ -70,45 +82,64 @@ func processDeviceMsgs(dev *pcap.Interface, idx int, waitGroup *sync.WaitGroup) 
 	var err error
 
 	if handle, err = pcap.OpenLive(dev.Name, 1600, false, 1*time.Second); err != nil {
-		fmt.Fprintf(os.Stderr, "Can't open stream %s\n", err)
+		fmt.Fprintf(os.Stderr, "Can't open stream: %s\n", err)
 		return
 	}
 	defer handle.Close()
-	handle.SetBPFFilter("tcp")
+
+	if handle.SetBPFFilter("tcp") != nil {
+		fmt.Fprintf(os.Stderr, "Can't filter TCP protocol: %s\n", err)
+		return
+	}
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetCh := packetSource.Packets()
 
-	var totalBytes uint64
-	var totalPackets uint64
-	var totalErrors uint64
+	var bytesSent uint64
+	var bytesRcvd uint64
+	var packetsSent uint64
+	var packetsRcvd uint64
+	var errors uint64
 
-	for range 10 {
+package_loop:
+	for {
+		select {
+		case <-sigStop:
+			sigStop <- syscall.SIGINT // for other thread(s)
+			break package_loop
+		default:
+		}
+
 		p, ok := <-packetCh
 		if !ok {
 			break
 		}
 
-		totalPackets++
-
 		errLayer := p.ErrorLayer()
 		if errLayer != nil {
-			totalErrors++
-			fmt.Fprintf(os.Stderr, "Error detected: %v\n", errLayer)
+			errors++
+			fmt.Fprintf(os.Stderr, "Error detected: %v\n", errLayer) // UC
 			continue
 		}
 
 		tcpLayer := p.Layer(layers.LayerTypeTCP)
 		if tcpLayer == nil {
-			fmt.Fprintln(os.Stderr, "Failed to decode TCP layer")
+			fmt.Fprintln(os.Stderr, "Failed to decode TCP layer") // UC
 			continue
 		}
 		tcp := tcpLayer.(*layers.TCP)
 
-		totalBytes += uint64(len(p.Data()))
-
-		fmt.Printf("%d: %v %v -> %v : %d\n", idx, p.Metadata().Timestamp, tcp.SrcPort, tcp.DstPort, len(p.Data()))
+		if ports.Contains(int(tcp.SrcPort)) {
+			bytesSent += uint64(len(p.Data()))
+			packetsSent++
+			fmt.Printf("%d: %v Sent %v -> %v : %d\n", idx, p.Metadata().Timestamp, tcp.SrcPort, tcp.DstPort, len(p.Data())) // UC
+		} else if ports.Contains(int(tcp.DstPort)) {
+			bytesRcvd += uint64(len(p.Data()))
+			packetsRcvd++
+			fmt.Printf("%d: %v Received %v -> %v : %d\n", idx, p.Metadata().Timestamp, tcp.SrcPort, tcp.DstPort, len(p.Data())) // UC
+		}
 	}
 
-	fmt.Printf("In total '%s' exchanged %d bytes in %d packets with %d errors\n", dev.Name, totalBytes, totalPackets, totalErrors)
+	// UC
+	fmt.Printf("'%s' Sent %d bytes [%d], Received %d bytes [%d with %d errors\n", dev.Name, bytesSent, packetsSent, bytesRcvd, packetsRcvd, errors)
 }
