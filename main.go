@@ -35,7 +35,7 @@ func main() {
 	waitGroup := new(sync.WaitGroup)
 	devIps := make(map[string]string)
 
-	for _, dev := range devs {
+	for idx, dev := range devs {
 		if (dev.Flags & PCAP_GTG_FLAGS) != PCAP_GTG_FLAGS {
 			continue
 		}
@@ -48,10 +48,10 @@ func main() {
 			ips = append(ips, addr.IP.String())
 		}
 		if len(ips) > 0 {
-			devIps[dev.Name+":"+strconv.FormatInt(int64(dev.Flags), 16)] = strings.Join(ips, ",")
+			devIps[strconv.Itoa(idx)+" ["+dev.Name+"]:"+strconv.FormatInt(int64(dev.Flags), 16)] = strings.Join(ips, ",")
 
 			waitGroup.Add(1)
-			go processDeviceMsgs(&dev, waitGroup)
+			go processDeviceMsgs(&dev, idx, waitGroup)
 		}
 	}
 
@@ -62,14 +62,14 @@ func main() {
 	waitGroup.Wait()
 }
 
-func processDeviceMsgs(ifc *pcap.Interface, waitGroup *sync.WaitGroup) {
+func processDeviceMsgs(dev *pcap.Interface, idx int, waitGroup *sync.WaitGroup) {
 
 	defer waitGroup.Done()
 
 	var handle *pcap.Handle
 	var err error
 
-	if handle, err = pcap.OpenLive(ifc.Name, 1600, false, 1*time.Second); err != nil {
+	if handle, err = pcap.OpenLive(dev.Name, 1600, false, 1*time.Second); err != nil {
 		fmt.Fprintf(os.Stderr, "Can't open stream %s\n", err)
 		return
 	}
@@ -80,6 +80,8 @@ func processDeviceMsgs(ifc *pcap.Interface, waitGroup *sync.WaitGroup) {
 	packetCh := packetSource.Packets()
 
 	var totalBytes uint64
+	var totalPackets uint64
+	var totalErrors uint64
 
 	for range 10 {
 		p, ok := <-packetCh
@@ -87,17 +89,26 @@ func processDeviceMsgs(ifc *pcap.Interface, waitGroup *sync.WaitGroup) {
 			break
 		}
 
+		totalPackets++
+
+		errLayer := p.ErrorLayer()
+		if errLayer != nil {
+			totalErrors++
+			fmt.Fprintf(os.Stderr, "Error detected: %v\n", errLayer)
+			continue
+		}
+
 		tcpLayer := p.Layer(layers.LayerTypeTCP)
 		if tcpLayer == nil {
-			fmt.Fprintf(os.Stderr, "No TCP{ layer???\n")
-			break
+			fmt.Fprintln(os.Stderr, "Failed to decode TCP layer")
+			continue
 		}
 		tcp := tcpLayer.(*layers.TCP)
 
-		fmt.Printf("%s: %v -> %v : %d\n", ifc.Name, tcp.SrcPort, tcp.DstPort, len(p.Data()))
-
 		totalBytes += uint64(len(p.Data()))
+
+		fmt.Printf("%d: %v %v -> %v : %d\n", idx, p.Metadata().Timestamp, tcp.SrcPort, tcp.DstPort, len(p.Data()))
 	}
 
-	fmt.Printf("In total %d bytes were sent\n", totalBytes)
+	fmt.Printf("In total '%s' exchanged %d bytes in %d packets with %d errors\n", dev.Name, totalBytes, totalPackets, totalErrors)
 }
