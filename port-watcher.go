@@ -1,5 +1,4 @@
-// The package watches open ports for a program
-package watcher
+package main
 
 import (
 	"fmt"
@@ -8,17 +7,15 @@ import (
 	"sync"
 	"time"
 
-	"main/set"
-
+	"github.com/aknopov/gopcap/set"
 	"github.com/sokurenko/go-netstat/netstat"
 )
 
 var (
-	watchPorts  = set.New[int]()
-	watchLock   sync.RWMutex
-	watchTicker *time.Ticker
-	watchProg   string
-	watchPid    int = -1
+	watchPorts = set.New[int]()
+	watchLock  sync.RWMutex
+	watchProg  string
+	watchPid   int = -1
 
 	// 0x0c = DeleteTcb (not in Linux)
 	inactiveStates = set.New(netstat.TimeWait, netstat.Close, netstat.Closing, netstat.SkState(0x0c))
@@ -32,9 +29,7 @@ var (
 	udp6SocksFn = netstat.UDP6Socks
 )
 
-func StartWatch(intvl time.Duration, prog string) {
-	watchTicker = time.NewTicker(intvl)
-
+func startPortsWatch(intvl time.Duration, prog string, done chan struct{}) {
 	if p, err := strconv.Atoi(prog); err == nil {
 		watchPid = p
 	} else {
@@ -42,14 +37,16 @@ func StartWatch(intvl time.Duration, prog string) {
 	}
 
 	go func() {
+		watchTicker := time.NewTicker(intvl)
 		for range watchTicker.C {
-			updatePorts()
+			select {
+			case <-done:
+				return
+			default:
+				updatePorts()
+			}
 		}
 	}()
-}
-
-func StopWatch() {
-	watchTicker.Stop()
 }
 
 func IsObserved(port int) bool {

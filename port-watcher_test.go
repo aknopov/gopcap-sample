@@ -1,38 +1,46 @@
-package watcher
+package main
 
 import (
-	"main/set"
 	"testing"
 	"time"
 
+	"github.com/aknopov/gopcap/set"
 	"github.com/sokurenko/go-netstat/netstat"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestProgSewtting(t *testing.T) {
-	assertT := assert.New(t)
+var doneTest chan struct{}
+
+func initT() {
 	watchProg = ""
 	watchPid = -1
+	doneTest = make(chan struct{})
+}
 
-	StartWatch(time.Millisecond, "foo")
+func TestUsingProg(t *testing.T) {
+	assertT := assert.New(t)
+	initT()
+
+	startPortsWatch(time.Millisecond, "foo", doneTest)
+	time.Sleep(5 * time.Millisecond)
 
 	assertT.Equal("foo", watchProg)
 	assertT.Equal(-1, watchPid)
 
-	StopWatch()
+	close(doneTest)
 }
 
-func TestPidParsing(t *testing.T) {
+func TestUsingPid(t *testing.T) {
 	assertT := assert.New(t)
-	watchProg = ""
-	watchPid = -1
+	initT()
 
-	StartWatch(time.Millisecond, "123")
+	startPortsWatch(time.Millisecond, "123", doneTest)
+	time.Sleep(5 * time.Millisecond)
 
 	assertT.Equal("", watchProg)
 	assertT.Equal(123, watchPid)
 
-	StopWatch()
+	close(doneTest)
 }
 
 var (
@@ -46,14 +54,14 @@ var (
 	}
 )
 
-//UC https://github.com/awterman/monkey/blob/2942abf7dbe961b3b90d9d3ebceb27a9b6c39765/monkey_test.go
+// UC monkey! https://github.com/awterman/monkey/blob/2942abf7dbe961b3b90d9d3ebceb27a9b6c39765/monkey_test.go
 func TestUpdatePorts(t *testing.T) {
 	assertT := assert.New(t)
 
-	ReplaceItem(&tcpSocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) {return tabEntries, nil})
-	ReplaceItem(&tcp6SocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) {return noProcess, nil})
-	ReplaceItem(&udpSocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) {return noProcess, nil})
-	ReplaceItem(&udp6SocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) {return noProcess, nil})
+	ReplaceItem(&tcpSocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return tabEntries, nil })
+	ReplaceItem(&tcp6SocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return noProcess, nil })
+	ReplaceItem(&udpSocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return noProcess, nil })
+	ReplaceItem(&udp6SocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return noProcess, nil })
 	ReplaceItem(&watchPorts, set.New(333))
 	ReplaceItem(&watchPid, 666)
 
