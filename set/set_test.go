@@ -53,3 +53,22 @@ func TestEnum(t *testing.T) {
 
 	assertT.ElementsMatch([]string{"Hello", "World"}, words)
 }
+
+func TestClear(t *testing.T) {
+	assertT := assert.New(t)
+
+	s := New("Hello", "World")
+	assertT.Equal(2, s.Size())
+
+	s.Clear()
+	assertT.Equal(0, s.Size())
+}
+
+func TestString(t *testing.T) {
+	assertT := assert.New(t)
+
+	s := New("Hello", "World")
+
+	assertT.Equal("[Hello,World]", s.String())
+
+}

@@ -1,5 +1,7 @@
 package set
 
+import "fmt"
+
 type dummyT struct{}
 
 var dummy dummyT
@@ -36,4 +38,21 @@ func (s *Set[T]) Contains(value T) bool {
 
 func (s *Set[T]) Size() int {
 	return len(s.m)
+}
+
+func (s *Set[T]) String() string {
+	ret := "["
+	idx := 0
+	for k := range s.m {
+		if idx > 0 {
+			ret += ","
+		}
+		ret += fmt.Sprintf("%v", k)
+		idx++
+	}
+	return ret + "]"
+}
+
+func (s *Set[T]) Clear() {
+	clear(s.m)
 }

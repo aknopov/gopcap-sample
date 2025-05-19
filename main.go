@@ -7,10 +7,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
-	"main/set"
+	"main/watcher"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -29,26 +30,36 @@ const (
 	PCAP_GTG_FLAGS                           = uint32(PCAP_IF_UP | PCAP_IF_RUNNING | PCAP_IF_CONNECTION_STATUS_CONNECTED)
 )
 
-var pid = 13756
+var (
+	bytesSent   atomic.Uint64
+	bytesRcvd   atomic.Uint64
+	packetsSent atomic.Uint64
+	packetsRcvd atomic.Uint64
+	errors      atomic.Uint64
+	waitGroup   *sync.WaitGroup = new(sync.WaitGroup)
+	sigStop     chan os.Signal  = make(chan os.Signal, 1) //UC should have N capacity for each "dev"
+)
 
 func main() {
 
-	ports := getOpenPorts(pid)
-	// fmt.Printf("Process %d has open ports: %v\n\n", pid, ports) //UC
+	if len(os.Args) != 2 { //UC "-i" - connections refresh interval
+		fmt.Fprintf(os.Stderr, "Usage: %s <program_or_pid>\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	signal.Notify(sigStop, syscall.SIGINT, syscall.SIGTERM)
+
+	watcher.StartWatch(time.Second, os.Args[1])
 
 	devs, err := pcap.FindAllDevs()
 	if err != nil {
 		return
 	}
 
-	waitGroup := new(sync.WaitGroup)
-	sigStop := make(chan os.Signal, 1)
-	signal.Notify(sigStop, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGHUP)
-
-	devIps := make(map[string]string) // UC
+	devIps := make(map[string]string) // UC findActiveDevices() []pcap.Interface
 
 	for idx, dev := range devs {
-		if (dev.Flags & PCAP_GTG_FLAGS) != PCAP_GTG_FLAGS { //  || (dev.Flags & PCAP_IF_LOOPBACK) == 0
+		if (dev.Flags & PCAP_GTG_FLAGS) != PCAP_GTG_FLAGS {
 			continue
 		}
 
@@ -63,18 +74,22 @@ func main() {
 			devIps[strconv.Itoa(idx)+" ["+dev.Name+"]:"+strconv.FormatInt(int64(dev.Flags), 16)] = strings.Join(ips, ",") // UC
 
 			waitGroup.Add(1)
-			go processDeviceMsgs(&dev, idx, ports, waitGroup, sigStop)
+			go processDeviceMsgs(&dev, idx)
 		}
 	}
 
-	for k, v := range devIps {
+	for k, v := range devIps { //UC
 		fmt.Printf("%s: %s\n", k, v)
 	}
 
 	waitGroup.Wait()
+	watcher.StopWatch()
+
+	// UC
+	fmt.Printf("Sent %d bytes [%d], Received %d bytes [%d] with %d errors\n", bytesSent.Load(), packetsSent.Load(), bytesRcvd.Load(), packetsRcvd.Load(), errors.Load())
 }
 
-func processDeviceMsgs(dev *pcap.Interface, idx int, ports *set.Set[int], waitGroup *sync.WaitGroup, sigStop chan os.Signal) {
+func processDeviceMsgs(dev *pcap.Interface, idx int) {
 
 	defer waitGroup.Done()
 
@@ -87,19 +102,13 @@ func processDeviceMsgs(dev *pcap.Interface, idx int, ports *set.Set[int], waitGr
 	}
 	defer handle.Close()
 
-	if handle.SetBPFFilter("tcp") != nil {
+	if handle.SetBPFFilter("tcp||udp") != nil {
 		fmt.Fprintf(os.Stderr, "Can't filter TCP protocol: %s\n", err)
 		return
 	}
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetCh := packetSource.Packets()
-
-	var bytesSent uint64
-	var bytesRcvd uint64
-	var packetsSent uint64
-	var packetsRcvd uint64
-	var errors uint64
 
 package_loop:
 	for {
@@ -117,29 +126,46 @@ package_loop:
 
 		errLayer := p.ErrorLayer()
 		if errLayer != nil {
-			errors++
+			errors.Add(1)
 			fmt.Fprintf(os.Stderr, "Error detected: %v\n", errLayer) // UC
 			continue
 		}
 
-		tcpLayer := p.Layer(layers.LayerTypeTCP)
-		if tcpLayer == nil {
-			fmt.Fprintln(os.Stderr, "Failed to decode TCP layer") // UC
-			continue
-		}
-		tcp := tcpLayer.(*layers.TCP)
-
-		if ports.Contains(int(tcp.SrcPort)) {
-			bytesSent += uint64(len(p.Data()))
-			packetsSent++
-			fmt.Printf("%d: %v Sent %v -> %v : %d\n", idx, p.Metadata().Timestamp, tcp.SrcPort, tcp.DstPort, len(p.Data())) // UC
-		} else if ports.Contains(int(tcp.DstPort)) {
-			bytesRcvd += uint64(len(p.Data()))
-			packetsRcvd++
-			fmt.Printf("%d: %v Received %v -> %v : %d\n", idx, p.Metadata().Timestamp, tcp.SrcPort, tcp.DstPort, len(p.Data())) // UC
+		var dstPort, srcPort int
+		if decodeTcp(p, &srcPort, &dstPort) || decodeUdp(p, &srcPort, &dstPort) {
+			if watcher.IsObserved(srcPort) {
+				bytesSent.Add(uint64(len(p.Data())))
+				packetsSent.Add(1)
+				fmt.Printf("%d: %v Sent %v -> %v : %d\n", idx, p.Metadata().Timestamp, srcPort, dstPort, len(p.Data())) // UC
+			} else if watcher.IsObserved(dstPort) {
+				bytesRcvd.Add(uint64(len(p.Data())))
+				packetsRcvd.Add(1)
+				fmt.Printf("%d: %v Received %v -> %v : %d\n", idx, p.Metadata().Timestamp, srcPort, dstPort, len(p.Data())) // UC
+			}
 		}
 	}
+}
 
-	// UC
-	fmt.Printf("'%s' Sent %d bytes [%d], Received %d bytes [%d with %d errors\n", dev.Name, bytesSent, packetsSent, bytesRcvd, packetsRcvd, errors)
+func decodeTcp(p gopacket.Packet, srcPort *int, dstPort *int) bool {
+	tcpLayer := p.Layer(layers.LayerTypeTCP)
+	if tcpLayer == nil {
+		return false
+	}
+
+	tcp := tcpLayer.(*layers.TCP)
+	*srcPort = int(tcp.SrcPort)
+	*dstPort = int(tcp.DstPort)
+	return true
+}
+
+func decodeUdp(p gopacket.Packet, srcPort *int, dstPort *int) bool {
+	udpLayer := p.Layer(layers.LayerTypeUDP)
+	if udpLayer == nil {
+		return false
+	}
+
+	udp := udpLayer.(*layers.UDP)
+	*srcPort = int(udp.SrcPort)
+	*dstPort = int(udp.DstPort)
+	return true
 }
