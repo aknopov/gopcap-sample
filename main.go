@@ -48,7 +48,7 @@ func main() {
 	sigStop := make(chan os.Signal, 1)
 	signal.Notify(sigStop, syscall.SIGINT, syscall.SIGTERM)
 
-	fmt.Printf("Tracking NIC devices (Ctrl+C to stop) for the process '%s':\n", otherArgs[0])
+	fmt.Printf("Tracking NIC devices for the process '%s' (Ctrl+C to stop):\n", otherArgs[0])
 	devs := findActiveDevices()
 	if len(devs) == 0 {
 		fmt.Fprintln(os.Stderr, "No active network devices found")
