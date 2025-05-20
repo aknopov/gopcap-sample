@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -26,15 +27,19 @@ var (
 
 func main() {
 
-	if len(os.Args) != 2 { // UC "-i" - connections refresh interval
-		fmt.Fprintf(os.Stderr, "Usage: %s <program_or_pid>\n", os.Args[0])
-		os.Exit(1)
-	}
+	refrInvl := 1.0
 
-	devs := findActiveDevices()
-	if len(devs) == 0 {
-		fmt.Fprintf(os.Stderr, "No active network devices found\n")
-		return
+	flagSet := flag.NewFlagSet("", flag.ExitOnError)
+	flagSet.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: main [-r=refresh_secs] prog_or_pid")
+	}
+	flagSet.Float64Var(&refrInvl, "r", 1.0, "ports scanning interval (sec)")
+	err := flagSet.Parse(os.Args[1:])
+
+	otherArgs := flagSet.Args()
+	if len(otherArgs) != 1 || err != nil {
+		flagSet.Usage()
+		os.Exit(1)
 	}
 
 	done := make(chan struct{})
@@ -43,11 +48,17 @@ func main() {
 	sigStop := make(chan os.Signal, 1)
 	signal.Notify(sigStop, syscall.SIGINT, syscall.SIGTERM)
 
-	startPortsWatch(time.Second, os.Args[1], done)
+	devs := findActiveDevices()
+	if len(devs) == 0 {
+		fmt.Fprintf(os.Stderr, "No active network devices found\n")
+		return
+	}
+
+	startPortsWatch(time.Duration(int64(refrInvl*1e+9)), otherArgs[0], done)
 
 	for idx, dev := range devs {
 		waitGroup.Add(1)
-		go processDeviceMsgs(&dev, idx, done)
+		go processDeviceMsgs(&dev, idx, sigStop, done)
 	}
 
 	<-sigStop
@@ -55,11 +66,10 @@ func main() {
 
 	waitGroup.Wait()
 
-	// UC
 	fmt.Printf("Sent %d bytes [%d], Received %d bytes [%d] with %d errors\n", bytesSent.Load(), packetsSent.Load(), bytesRcvd.Load(), packetsRcvd.Load(), errors.Load())
 }
 
-func processDeviceMsgs(dev *pcap.Interface, idx int, done chan struct{}) {
+func processDeviceMsgs(dev *pcap.Interface, idx int, sigStop chan os.Signal, done chan struct{}) {
 
 	defer waitGroup.Done()
 
@@ -68,6 +78,7 @@ func processDeviceMsgs(dev *pcap.Interface, idx int, done chan struct{}) {
 
 	if handle, err = pcap.OpenLive(dev.Name, 1600, false, 1*time.Second); err != nil {
 		fmt.Fprintf(os.Stderr, "Can't open stream: %s\n", err)
+		sigStop <- syscall.SIGINT
 		return
 	}
 	defer handle.Close()
@@ -80,16 +91,12 @@ func processDeviceMsgs(dev *pcap.Interface, idx int, done chan struct{}) {
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetCh := packetSource.Packets()
 
-	for {
-		select {
-		case <-done:
-			return
-		default:
-		}
+	for keepGoing(done) {
 
-		p, ok := <-packetCh
-		if !ok {
-			break
+		p := waitNextPacket(packetCh)
+		if p == nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 
 		errLayer := p.ErrorLayer()
@@ -110,6 +117,24 @@ func processDeviceMsgs(dev *pcap.Interface, idx int, done chan struct{}) {
 				fmt.Printf("%d: %v Received %v -> %v : %d\n", idx, p.Metadata().Timestamp, srcPort, dstPort, len(p.Data())) // UC
 			}
 		}
+	}
+}
+
+func keepGoing(done chan struct{}) bool {
+	select {
+	case <-done:
+		return false
+	default:
+		return true
+	}
+}
+
+func waitNextPacket(packetCh chan gopacket.Packet) gopacket.Packet {
+	select {
+	case p := <-packetCh:
+		return p
+	default:
+		return nil
 	}
 }
 

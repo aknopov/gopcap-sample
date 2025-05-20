@@ -72,7 +72,7 @@ func TestUpdatePorts(t *testing.T) {
 
 func BenchmarkUpdatePorts(b *testing.B) {
 
-	for _ = range b.N {
+	for range b.N {
 		updatePorts()
 	}
 }
