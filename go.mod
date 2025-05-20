@@ -1,4 +1,4 @@
-module github.com/aknopov/gopcap
+module github.com/aknopov/gopcap-sample
 
 go 1.23.3
 
