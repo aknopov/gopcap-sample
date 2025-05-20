@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agiledragon/gomonkey/v2"
 	"github.com/aknopov/gopcap/set"
 	"github.com/sokurenko/go-netstat/netstat"
 	"github.com/stretchr/testify/assert"
@@ -54,16 +55,15 @@ var (
 	}
 )
 
-// UC monkey! https://github.com/awterman/monkey/blob/2942abf7dbe961b3b90d9d3ebceb27a9b6c39765/monkey_test.go
 func TestUpdatePorts(t *testing.T) {
 	assertT := assert.New(t)
 
-	ReplaceItem(&tcpSocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return tabEntries, nil })
-	ReplaceItem(&tcp6SocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return noProcess, nil })
-	ReplaceItem(&udpSocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return noProcess, nil })
-	ReplaceItem(&udp6SocksFn, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return noProcess, nil })
-	ReplaceItem(&watchPorts, set.New(333))
-	ReplaceItem(&watchPid, 666)
+	defer replaceFun(netstat.TCPSocks, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return tabEntries, nil })()
+	defer replaceFun(netstat.TCP6Socks, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return noProcess, nil })()
+	defer replaceFun(netstat.UDPSocks, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return noProcess, nil })()
+	defer replaceFun(netstat.UDP6Socks, func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, error) { return noProcess, nil })()
+	defer replaceVar(watchPorts, *set.New(333))()
+	defer replaceVar(&watchPid, 666)()
 
 	assertT.Equal(set.New(333), watchPorts)
 	updatePorts()
@@ -77,13 +77,20 @@ func BenchmarkUpdatePorts(b *testing.B) {
 	}
 }
 
-// Tests quite often require to replace original functions or variables by the mock ones.
-// Function below preserves and restores an item (function or variable).
-// It should be used like this (note extra brackets) -
-//
-//	defer mocker.ReplaceItem(&orgVal, newVal)()
-func ReplaceItem[T any](orgVal *T, newVal T) func() {
-	saveVal := *orgVal
-	*orgVal = newVal
-	return func() { *orgVal = saveVal }
+func replaceFun[Fn any](target Fn, replacement Fn) func() {
+	patches := gomonkey.NewPatches()
+	p := patches.ApplyFunc(target, replacement)
+
+	return func() {
+		p.Reset()
+	}
+}
+
+func replaceVar[V any](target *V, replacement V) func() {
+	patches := gomonkey.NewPatches()
+	p := patches.ApplyGlobalVar(target, replacement)
+
+	return func() {
+		p.Reset()
+	}
 }

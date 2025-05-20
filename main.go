@@ -48,11 +48,13 @@ func main() {
 	sigStop := make(chan os.Signal, 1)
 	signal.Notify(sigStop, syscall.SIGINT, syscall.SIGTERM)
 
+	fmt.Printf("Tracking NIC devices (Ctrl+C to stop) for the process '%s':\n", otherArgs[0])
 	devs := findActiveDevices()
 	if len(devs) == 0 {
-		fmt.Fprintf(os.Stderr, "No active network devices found\n")
+		fmt.Fprintln(os.Stderr, "No active network devices found")
 		return
 	}
+	fmt.Println()
 
 	startPortsWatch(time.Duration(int64(refrInvl*1e+9)), otherArgs[0], done)
 
@@ -110,11 +112,11 @@ func processDeviceMsgs(dev *pcap.Interface, idx int, sigStop chan os.Signal, don
 			if IsObserved(srcPort) {
 				bytesSent.Add(uint64(len(p.Data())))
 				packetsSent.Add(1)
-				fmt.Printf("%d: %v Sent %v -> %v : %d\n", idx, p.Metadata().Timestamp, srcPort, dstPort, len(p.Data())) // UC
+				fmt.Printf("%d: %v Sent %v -> %v : %d\n", idx, p.Metadata().Timestamp, srcPort, dstPort, len(p.Data()))
 			} else if IsObserved(dstPort) {
 				bytesRcvd.Add(uint64(len(p.Data())))
 				packetsRcvd.Add(1)
-				fmt.Printf("%d: %v Received %v -> %v : %d\n", idx, p.Metadata().Timestamp, srcPort, dstPort, len(p.Data())) // UC
+				fmt.Printf("%d: %v Received %v -> %v : %d\n", idx, p.Metadata().Timestamp, srcPort, dstPort, len(p.Data()))
 			}
 		}
 	}

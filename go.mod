@@ -2,7 +2,10 @@ module github.com/aknopov/gopcap
 
 go 1.23.3
 
-require github.com/google/gopacket v1.1.19
+require (
+	github.com/agiledragon/gomonkey/v2 v2.12.0
+	github.com/google/gopacket v1.1.19
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect

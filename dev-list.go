@@ -26,7 +26,6 @@ func findActiveDevices() map[int]pcap.Interface {
 		return ret
 	}
 
-	fmt.Println("Tracked devices:")
 	for idx, dev := range devs {
 		if (dev.Flags&PCAP_GTG_FLAGS) == PCAP_GTG_FLAGS && len(dev.Addresses) > 0 {
 			ret[idx+1] = dev
@@ -35,8 +34,6 @@ func findActiveDevices() map[int]pcap.Interface {
 		}
 	}
 	
-	fmt.Println()
-
 	return ret
 }
 

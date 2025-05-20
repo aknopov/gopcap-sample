@@ -21,14 +21,6 @@ var (
 	inactiveStates = set.New(netstat.TimeWait, netstat.Close, netstat.Closing, netstat.SkState(0x0c))
 )
 
-// Unit test substitutes
-var (
-	tcpSocksFn  = netstat.TCPSocks
-	tcp6SocksFn = netstat.TCP6Socks
-	udpSocksFn  = netstat.UDPSocks
-	udp6SocksFn = netstat.UDP6Socks
-)
-
 func startPortsWatch(intvl time.Duration, prog string, done chan struct{}) {
 	if p, err := strconv.Atoi(prog); err == nil {
 		watchPid = p
@@ -69,10 +61,10 @@ func enumeratePorts(fn func(accept netstat.AcceptFn) ([]netstat.SockTabEntry, er
 }
 
 func updatePorts() {
-	ipTab := enumeratePorts(tcpSocksFn)
-	ipTab = append(ipTab, enumeratePorts(tcp6SocksFn)...)
-	ipTab = append(ipTab, enumeratePorts(udpSocksFn)...)
-	ipTab = append(ipTab, enumeratePorts(udp6SocksFn)...)
+	ipTab := enumeratePorts(netstat.TCPSocks)
+	ipTab = append(ipTab, enumeratePorts(netstat.TCP6Socks)...)
+	ipTab = append(ipTab, enumeratePorts(netstat.UDPSocks)...)
+	ipTab = append(ipTab, enumeratePorts(netstat.UDP6Socks)...)
 
 	watchLock.Lock()
 	defer watchLock.Unlock()
